@@ -223,6 +223,11 @@ The development followed an iterative process where:
 
 This approach resulted in robust, well-tested code that strictly adheres to RFC 8949 while maintaining clean Swift conventions and excellent performance characteristics.
 
+### OpenAI codex based proejct
+
+I tried the same concept project based on OpenAI codex.  You may visit to see the different and the similarities between the two projects.
+https://github.com/codelynx/CBORDex
+
 ## License
 
 CBORCla is available under the MIT license. See the LICENSE file for more info.
