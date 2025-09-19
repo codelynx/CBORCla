@@ -194,20 +194,31 @@ final class _CBOREncoder: Encoder {
 
     func encodeFloat(_ value: Float) {
         if options.useCanonicalEncoding {
-            // Canonical: encode NaN as 0xf97e00
+            // RFC 8949 Section 4.2.2: Canonical encoding of floats
             if value.isNaN {
+                // Canonical: encode NaN as 0xf97e00 (shortest form, no payload)
                 data.append(contentsOf: [0xf9, 0x7e, 0x00])
             } else if value.isInfinite {
-                // Canonical: use shortest form for infinity
+                // Canonical: use shortest form for infinity (Float16)
                 if value > 0 {
                     data.append(contentsOf: [0xf9, 0x7c, 0x00])  // +Infinity
                 } else {
                     data.append(contentsOf: [0xf9, 0xfc, 0x00])  // -Infinity
                 }
+            } else if value == 0.0 {
+                // Handle positive and negative zero
+                if value.sign == .plus {
+                    // +0.0 encoded as 0xf90000
+                    data.append(contentsOf: [0xf9, 0x00, 0x00])
+                } else {
+                    // -0.0 encoded as 0xf98000
+                    data.append(contentsOf: [0xf9, 0x80, 0x00])
+                }
             } else {
                 // Check if we can represent as Float16 without loss
                 let half = Float16(value)
-                if Float(half) == value {
+                if Float(half) == value && !half.isSubnormal {
+                    // Use Float16 only if not subnormal (for canonical form)
                     encodeFloat16(half)
                 } else {
                     // Use Float32
@@ -225,32 +236,39 @@ final class _CBOREncoder: Encoder {
 
     func encodeDouble(_ value: Double) {
         if options.useCanonicalEncoding {
-            // Canonical: encode NaN as 0xf97e00
+            // RFC 8949 Section 4.2.2: Canonical encoding of floats
             if value.isNaN {
+                // Canonical: encode NaN as 0xf97e00 (shortest form, no payload)
                 data.append(contentsOf: [0xf9, 0x7e, 0x00])
             } else if value.isInfinite {
-                // Canonical: use shortest form for infinity
+                // Canonical: use shortest form for infinity (Float16)
                 if value > 0 {
                     data.append(contentsOf: [0xf9, 0x7c, 0x00])  // +Infinity
                 } else {
                     data.append(contentsOf: [0xf9, 0xfc, 0x00])  // -Infinity
                 }
+            } else if value == 0.0 {
+                // Handle positive and negative zero
+                if value.sign == .plus {
+                    // +0.0 encoded as 0xf90000
+                    data.append(contentsOf: [0xf9, 0x00, 0x00])
+                } else {
+                    // -0.0 encoded as 0xf98000
+                    data.append(contentsOf: [0xf9, 0x80, 0x00])
+                }
             } else {
-                // Try Float16 first, then Float32, then Float64
+                // Try to use the shortest form that preserves the value
                 let floatValue = Float(value)
-                if Double(floatValue) == value {
+                if Double(floatValue) == value && !floatValue.isSubnormal {
                     // Can represent as Float without loss
                     let half = Float16(floatValue)
-                    if Double(Float(half)) == value {
+                    if Double(Float(half)) == value && !half.isSubnormal {
+                        // Can use Float16 without loss and not subnormal
                         encodeFloat16(half)
-                    } else if Double(floatValue) == value {
+                    } else {
+                        // Use Float32
                         data.append(0xfa)
                         var bits = floatValue.bitPattern.bigEndian
-                        data.append(contentsOf: withUnsafeBytes(of: &bits, Array.init))
-                    } else {
-                        // Use Float64
-                        data.append(0xfb)
-                        var bits = value.bitPattern.bigEndian
                         data.append(contentsOf: withUnsafeBytes(of: &bits, Array.init))
                     }
                 } else {

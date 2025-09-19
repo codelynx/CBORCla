@@ -368,90 +368,140 @@ final class CBORReader {
     }
 
     private func validateTagContent(tag: UInt64, value: CBORValue) throws {
-        // RFC 8949 tag content validation
+        // RFC 8949 and IANA tag content validation
         switch tag {
-        case 0: // Standard date/time string
+        case 0: // Standard date/time string (RFC 3339)
             guard case .textString = value else {
                 throw CBORError.invalidFormat("Tag 0 requires text string, got \(value)")
             }
+
         case 1: // Epoch-based date/time
             switch value {
-            case .unsigned, .negative, .float32, .float64:
+            case .unsigned, .negative, .float16, .float32, .float64:
                 break // Valid
             default:
                 throw CBORError.invalidFormat("Tag 1 requires numeric value, got \(value)")
             }
+
         case 2, 3: // Positive/negative bignum
             guard case .byteString = value else {
                 throw CBORError.invalidFormat("Tag \(tag) requires byte string, got \(value)")
             }
-        case 4: // Decimal fraction
+
+        case 4, 5: // Decimal fraction / Bigfloat
             guard case .array(let arr) = value, arr.count == 2 else {
-                throw CBORError.invalidFormat("Tag 4 requires array with 2 elements")
+                throw CBORError.invalidFormat("Tag \(tag) requires array with 2 elements")
             }
             // First element must be exponent (integer)
             switch arr[0] {
             case .unsigned, .negative:
                 break
             default:
-                throw CBORError.invalidFormat("Tag 4 exponent must be integer")
+                throw CBORError.invalidFormat("Tag \(tag) exponent must be integer")
             }
-            // Second element must be mantissa (integer or bignum)
-            switch arr[1] {
-            case .unsigned, .negative, .tagged(2, _), .tagged(3, _):
-                break
-            default:
-                throw CBORError.invalidFormat("Tag 4 mantissa must be integer or bignum")
+            // Second element must be mantissa (integer or bignum for tag 4, any number for tag 5)
+            if tag == 4 {
+                switch arr[1] {
+                case .unsigned, .negative, .tagged(2, _), .tagged(3, _):
+                    break
+                default:
+                    throw CBORError.invalidFormat("Tag 4 mantissa must be integer or bignum")
+                }
             }
-        case 5: // Bigfloat
-            guard case .array(let arr) = value, arr.count == 2 else {
-                throw CBORError.invalidFormat("Tag 5 requires array with 2 elements")
-            }
-            // Similar validation as decimal fraction
-            switch arr[0] {
-            case .unsigned, .negative:
-                break
-            default:
-                throw CBORError.invalidFormat("Tag 5 exponent must be integer")
-            }
-            switch arr[1] {
-            case .unsigned, .negative, .tagged(2, _), .tagged(3, _):
-                break
-            default:
-                throw CBORError.invalidFormat("Tag 5 mantissa must be integer or bignum")
-            }
-        case 21, 22, 23: // Base64url, base64, base16
-            switch value {
-            case .textString, .byteString:
-                break // Valid
-            default:
-                throw CBORError.invalidFormat("Tag \(tag) requires text or byte string")
-            }
-        case 24: // Encoded CBOR data item
+
+        case 21, 22, 23: // Base64url/base64/base16 conversion hints
+            // These can contain any data type that will be converted
+            break
+
+        case 24: // Encoded CBOR data
             guard case .byteString = value else {
-                throw CBORError.invalidFormat("Tag 24 requires byte string containing CBOR")
+                throw CBORError.invalidFormat("Tag 24 requires byte string containing CBOR data")
             }
+
+        case 25, 26: // String reference / Perl object
+            // Implementation-specific, validation depends on context
+            break
+
+        case 30: // Rational number
+            guard case .array(let arr) = value, arr.count == 2 else {
+                throw CBORError.invalidFormat("Tag 30 requires array with 2 elements [numerator, denominator]")
+            }
+            // Both elements must be integers
+            for (i, elem) in arr.enumerated() {
+                switch elem {
+                case .unsigned, .negative, .tagged(2, _), .tagged(3, _):
+                    break
+                default:
+                    throw CBORError.invalidFormat("Tag 30 element \(i) must be integer or bignum")
+                }
+            }
+
         case 32: // URI
             guard case .textString = value else {
-                throw CBORError.invalidFormat("Tag 32 requires text string (URI)")
+                throw CBORError.invalidFormat("Tag 32 requires text string URI")
             }
-        case 33, 34: // Base64url, base64
+
+        case 33, 34: // Base64url/base64 encoded text
             guard case .textString = value else {
                 throw CBORError.invalidFormat("Tag \(tag) requires text string")
             }
+
         case 35: // Regular expression
             guard case .textString = value else {
-                throw CBORError.invalidFormat("Tag 35 requires text string (regex)")
+                throw CBORError.invalidFormat("Tag 35 requires text string regex")
             }
+
         case 36: // MIME message
             guard case .textString = value else {
-                throw CBORError.invalidFormat("Tag 36 requires text string (MIME)")
+                throw CBORError.invalidFormat("Tag 36 requires text string MIME message")
             }
-        case 55799: // Self-described CBOR
-            // Any CBOR value is valid
+
+        case 37: // UUID
+            guard case .byteString(let data) = value, data.count == 16 else {
+                throw CBORError.invalidFormat("Tag 37 requires 16-byte byte string for UUID")
+            }
+
+        case 38: // Language-tagged string
+            guard case .array(let arr) = value,
+                  arr.count == 2,
+                  case .textString = arr[0], // Language tag
+                  case .textString = arr[1]  // Text content
+            else {
+                throw CBORError.invalidFormat("Tag 38 requires [language-tag, text] array")
+            }
+
+        case 40, 41: // Multi-dimensional arrays
+            guard case .array = value else {
+                throw CBORError.invalidFormat("Tag \(tag) requires array")
+            }
+
+        case 42: // IPLD CID
+            guard case .byteString = value else {
+                throw CBORError.invalidFormat("Tag 42 requires byte string CID")
+            }
+
+        case 64...86: // Typed arrays
+            guard case .byteString = value else {
+                throw CBORError.invalidFormat("Tag \(tag) typed array requires byte string")
+            }
+
+        case 260: // Network address
+            guard case .byteString(let data) = value,
+                  data.count == 4 || data.count == 16 else { // IPv4 or IPv6
+                throw CBORError.invalidFormat("Tag 260 requires 4 or 16 byte address")
+            }
+
+        case 261: // Network prefix
+            guard case .byteString = value else {
+                throw CBORError.invalidFormat("Tag 261 requires byte string prefix")
+            }
+
+        case 55799: // Self-describe CBOR
+            // Can contain any CBOR value
             break
+
         default:
-            // Unknown tags are allowed but we don't validate their content
+            // Unknown tags are allowed but not validated
             break
         }
     }
