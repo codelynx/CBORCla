@@ -149,8 +149,13 @@ final class CBORReader {
             let tag = try readLength(additionalInfo)
             let value = try readValue()
 
-            // Validate tag content according to RFC 8949
-            try validateTagContent(tag: tag, value: value)
+            // Validate tag content according to RFC 8949 and IANA registry
+            if strictMode {
+                // Use comprehensive IANA validation in strict mode
+                try validateTagWithIANA(tag: tag, value: value)
+            } else {
+                try validateTagContent(tag: tag, value: value)
+            }
 
             return .tagged(tag, Box(value))
 
