@@ -25,6 +25,7 @@ public class CBOREncoder {
         public var userInfo: [CodingUserInfoKey: Any] = [:]
         public var sortKeys: Bool = false
         public var useCanonicalEncoding: Bool = false
+        public var preferDefiniteLength: Bool = true // RFC 8949: Preferred serialization
 
         public init() {}
     }
@@ -58,7 +59,12 @@ public class CBOREncoder {
     public init() {}
 
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        let encoder = _CBOREncoder(options: options)
+        var opts = options
+        // Canonical encoding always prefers definite length
+        if opts.useCanonicalEncoding {
+            opts.preferDefiniteLength = true
+        }
+        let encoder = _CBOREncoder(options: opts)
 
         // Handle special types at the top level
         if let data = value as? Data {
@@ -556,14 +562,17 @@ extension _CBOREncoder {
 
         deinit {
             if encoder.options.sortKeys || encoder.options.useCanonicalEncoding {
-                // Canonical encoding: sort by encoded key length first, then lexicographically
+                // RFC 8949 Section 4.2.1: Canonical CBOR map key ordering
+                // 1. If two keys have different lengths, shorter one sorts first
+                // 2. If same length, lexicographic comparison of byte sequences
                 elements.sort { lhs, rhs in
                     if encoder.options.useCanonicalEncoding {
-                        // Canonical: length first, then lexicographic
+                        // Strict canonical: length first, then byte-wise lexicographic
                         if lhs.0.count != rhs.0.count {
                             return lhs.0.count < rhs.0.count
                         }
                     }
+                    // Byte-wise lexicographic comparison
                     return lhs.0.lexicographicallyPrecedes(rhs.0)
                 }
             }

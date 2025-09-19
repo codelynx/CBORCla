@@ -51,6 +51,8 @@ public enum CBORError: Error, LocalizedError {
     case invalidFloatingPoint
     case tagNotSupported(UInt64)
     case depthLimitExceeded
+    case invalidIndefiniteLength
+    case malformedData(String)
 
     public var errorDescription: String? {
         switch self {
@@ -76,6 +78,10 @@ public enum CBORError: Error, LocalizedError {
             return "CBOR tag \(tag) not supported"
         case .depthLimitExceeded:
             return "Maximum nesting depth exceeded"
+        case .invalidIndefiniteLength:
+            return "Invalid indefinite-length item"
+        case .malformedData(let msg):
+            return "Malformed CBOR data: \(msg)"
         }
     }
 }

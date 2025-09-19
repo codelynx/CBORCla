@@ -9,6 +9,7 @@ public class CBORDecoder {
         public var userInfo: [CodingUserInfoKey: Any] = [:]
         public var allowDuplicateMapKeys: Bool = false
         public var maxDepth: Int = 512
+        public var strictMode: Bool = false  // RFC 8949 strict validation mode
 
         public init() {}
     }
@@ -47,7 +48,7 @@ public class CBORDecoder {
     }
 
     public func decodeValue(from data: Data) throws -> CBORValue {
-        let reader = CBORReader(bytes: Array(data), allowDuplicateMapKeys: options.allowDuplicateMapKeys)
+        let reader = CBORReader(bytes: Array(data), allowDuplicateMapKeys: options.allowDuplicateMapKeys, strictMode: options.strictMode)
         return try reader.readValue()
     }
 }
@@ -58,10 +59,12 @@ final class CBORReader {
     private var depth: Int = 0
     private let maxDepth: Int = 512
     let allowDuplicateMapKeys: Bool
+    let strictMode: Bool
 
-    init(bytes: [UInt8], allowDuplicateMapKeys: Bool = false) {
+    init(bytes: [UInt8], allowDuplicateMapKeys: Bool = false, strictMode: Bool = false) {
         self.bytes = bytes
         self.allowDuplicateMapKeys = allowDuplicateMapKeys
+        self.strictMode = strictMode
     }
 
     func readValue() throws -> CBORValue {
@@ -145,6 +148,10 @@ final class CBORReader {
         case .tag:
             let tag = try readLength(additionalInfo)
             let value = try readValue()
+
+            // Validate tag content according to RFC 8949
+            try validateTagContent(tag: tag, value: value)
+
             return .tagged(tag, Box(value))
 
         case .primitive:
@@ -163,8 +170,18 @@ final class CBORReader {
                 }
                 let value = bytes[index]
                 index += 1
+
+                // RFC 8949: Simple values 0-19 are unassigned and MUST NOT be used
+                if value < 20 {
+                    throw CBORError.invalidFormat("Unassigned simple value \(value) (0-19 are reserved)")
+                }
+
                 if let simple = CBORValue.SimpleValue(rawValue: value) {
                     return .simple(simple)
+                }
+                // Values 24-31 are reserved
+                if value >= 24 && value <= 31 {
+                    throw CBORError.invalidFormat("Reserved simple value: \(value)")
                 }
                 throw CBORError.invalidFormat("Unknown simple value: \(value)")
             case 25:
@@ -179,8 +196,9 @@ final class CBORReader {
             case 31:
                 return .break
             default:
+                // RFC 8949: Simple values 0-19 are unassigned and MUST NOT be used
                 if additionalInfo < 20 {
-                    throw CBORError.invalidFormat("Unassigned simple value: \(additionalInfo)")
+                    throw CBORError.invalidFormat("Unassigned simple value: \(additionalInfo) (0-19 are reserved)")
                 }
                 throw CBORError.invalidFormat("Unknown primitive: \(additionalInfo)")
             }
@@ -192,13 +210,33 @@ final class CBORReader {
         case 0..<24:
             return UInt64(info)
         case 24:
-            return UInt64(try readUInt8())
+            let value = try readUInt8()
+            // In strict mode, reject non-canonical encodings
+            if strictMode && value < 24 {
+                throw CBORError.invalidFormat("Non-canonical encoding: value \(value) should use direct encoding")
+            }
+            return UInt64(value)
         case 25:
-            return UInt64(try readUInt16())
+            let value = try readUInt16()
+            // In strict mode, reject non-canonical encodings
+            if strictMode && value <= 0xFF {
+                throw CBORError.invalidFormat("Non-canonical encoding: value \(value) should use shorter form")
+            }
+            return UInt64(value)
         case 26:
-            return UInt64(try readUInt32())
+            let value = try readUInt32()
+            // In strict mode, reject non-canonical encodings
+            if strictMode && value <= 0xFFFF {
+                throw CBORError.invalidFormat("Non-canonical encoding: value \(value) should use shorter form")
+            }
+            return UInt64(value)
         case 27:
-            return try readUInt64()
+            let value = try readUInt64()
+            // In strict mode, reject non-canonical encodings
+            if strictMode && value <= 0xFFFFFFFF {
+                throw CBORError.invalidFormat("Non-canonical encoding: value \(value) should use shorter form")
+            }
+            return value
         default:
             throw CBORError.invalidFormat("Invalid additional info: \(info)")
         }
@@ -261,6 +299,9 @@ final class CBORReader {
 
     private func readIndefiniteByteString() throws -> CBORValue {
         var chunks = Data()
+        var chunkCount = 0
+        let maxChunks = 1000000 // Prevent DoS attacks
+
         while true {
             let value = try readValue()
             if case .break = value {
@@ -269,6 +310,17 @@ final class CBORReader {
             guard case .byteString(let data) = value else {
                 throw CBORError.wrongTypeInsideIndefiniteLength
             }
+
+            chunkCount += 1
+            if chunkCount > maxChunks {
+                throw CBORError.tooLongIndefiniteLength
+            }
+
+            // Check for overflow
+            if chunks.count > Int.max - data.count {
+                throw CBORError.malformedData("Byte string too large")
+            }
+
             chunks.append(data)
         }
         return .byteString(chunks)
@@ -276,6 +328,9 @@ final class CBORReader {
 
     private func readIndefiniteTextString() throws -> CBORValue {
         var result = ""
+        var chunkCount = 0
+        let maxChunks = 1000000 // Prevent DoS attacks
+
         while true {
             let value = try readValue()
             if case .break = value {
@@ -284,6 +339,17 @@ final class CBORReader {
             guard case .textString(let string) = value else {
                 throw CBORError.wrongTypeInsideIndefiniteLength
             }
+
+            chunkCount += 1
+            if chunkCount > maxChunks {
+                throw CBORError.tooLongIndefiniteLength
+            }
+
+            // Check for overflow
+            if result.count > Int.max - string.count {
+                throw CBORError.malformedData("Text string too large")
+            }
+
             result += string
         }
         return .textString(result)
@@ -299,6 +365,95 @@ final class CBORReader {
             array.append(value)
         }
         return .array(array)
+    }
+
+    private func validateTagContent(tag: UInt64, value: CBORValue) throws {
+        // RFC 8949 tag content validation
+        switch tag {
+        case 0: // Standard date/time string
+            guard case .textString = value else {
+                throw CBORError.invalidFormat("Tag 0 requires text string, got \(value)")
+            }
+        case 1: // Epoch-based date/time
+            switch value {
+            case .unsigned, .negative, .float32, .float64:
+                break // Valid
+            default:
+                throw CBORError.invalidFormat("Tag 1 requires numeric value, got \(value)")
+            }
+        case 2, 3: // Positive/negative bignum
+            guard case .byteString = value else {
+                throw CBORError.invalidFormat("Tag \(tag) requires byte string, got \(value)")
+            }
+        case 4: // Decimal fraction
+            guard case .array(let arr) = value, arr.count == 2 else {
+                throw CBORError.invalidFormat("Tag 4 requires array with 2 elements")
+            }
+            // First element must be exponent (integer)
+            switch arr[0] {
+            case .unsigned, .negative:
+                break
+            default:
+                throw CBORError.invalidFormat("Tag 4 exponent must be integer")
+            }
+            // Second element must be mantissa (integer or bignum)
+            switch arr[1] {
+            case .unsigned, .negative, .tagged(2, _), .tagged(3, _):
+                break
+            default:
+                throw CBORError.invalidFormat("Tag 4 mantissa must be integer or bignum")
+            }
+        case 5: // Bigfloat
+            guard case .array(let arr) = value, arr.count == 2 else {
+                throw CBORError.invalidFormat("Tag 5 requires array with 2 elements")
+            }
+            // Similar validation as decimal fraction
+            switch arr[0] {
+            case .unsigned, .negative:
+                break
+            default:
+                throw CBORError.invalidFormat("Tag 5 exponent must be integer")
+            }
+            switch arr[1] {
+            case .unsigned, .negative, .tagged(2, _), .tagged(3, _):
+                break
+            default:
+                throw CBORError.invalidFormat("Tag 5 mantissa must be integer or bignum")
+            }
+        case 21, 22, 23: // Base64url, base64, base16
+            switch value {
+            case .textString, .byteString:
+                break // Valid
+            default:
+                throw CBORError.invalidFormat("Tag \(tag) requires text or byte string")
+            }
+        case 24: // Encoded CBOR data item
+            guard case .byteString = value else {
+                throw CBORError.invalidFormat("Tag 24 requires byte string containing CBOR")
+            }
+        case 32: // URI
+            guard case .textString = value else {
+                throw CBORError.invalidFormat("Tag 32 requires text string (URI)")
+            }
+        case 33, 34: // Base64url, base64
+            guard case .textString = value else {
+                throw CBORError.invalidFormat("Tag \(tag) requires text string")
+            }
+        case 35: // Regular expression
+            guard case .textString = value else {
+                throw CBORError.invalidFormat("Tag 35 requires text string (regex)")
+            }
+        case 36: // MIME message
+            guard case .textString = value else {
+                throw CBORError.invalidFormat("Tag 36 requires text string (MIME)")
+            }
+        case 55799: // Self-described CBOR
+            // Any CBOR value is valid
+            break
+        default:
+            // Unknown tags are allowed but we don't validate their content
+            break
+        }
     }
 
     private func readIndefiniteMap() throws -> CBORValue {
