@@ -200,6 +200,29 @@ CBORCla is optimized for performance with:
 
 Contributions are welcome! Please feel free to submit pull requests.
 
+## Development
+
+This project was developed using [Claude Code](https://claude.ai/code), an AI-powered coding assistant by Anthropic. The development process showcases effective human-AI collaboration:
+
+### How Claude Code Assisted Development
+
+- **RFC Implementation**: Claude Code helped implement the complete RFC 8949 specification, ensuring compliance with all CBOR standards and edge cases
+- **Test-Driven Development**: Comprehensive test suites were developed collaboratively, with Claude Code generating test cases for RFC compliance, edge cases, and real-world scenarios
+- **Code Architecture**: The modular architecture with separate encoder/decoder components, CBOR value representations, and IANA tag support was designed through iterative discussions
+- **Documentation**: API documentation, usage examples, and inline comments were generated to ensure code maintainability
+- **Best Practices**: Claude Code ensured Swift best practices, including proper error handling, protocol conformance, and performance optimizations
+
+### Human-AI Collaboration Model
+
+The development followed an iterative process where:
+1. The human developer provided high-level requirements and specifications
+2. Claude Code implemented features with detailed explanations
+3. The human reviewed, tested, and provided feedback
+4. Claude Code refined the implementation based on feedback
+5. Both collaborated on debugging and optimization
+
+This approach resulted in robust, well-tested code that strictly adheres to RFC 8949 while maintaining clean Swift conventions and excellent performance characteristics.
+
 ## License
 
 CBORCla is available under the MIT license. See the LICENSE file for more info.
